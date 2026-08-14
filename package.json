@@ -1,0 +1,42 @@
+{
+  "name": "pi-agent-view",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Pi extension that multiplexes several live InteractiveMode sessions in one process. Switching is a terminal handoff — background sessions keep running.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "agent-view",
+    "parallel-sessions",
+    "tui"
+  ],
+  "author": "Alisher Amantay",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alisher-amantay/pi-agent-view.git"
+  },
+  "homepage": "https://github.com/alisher-amantay/pi-agent-view#readme",
+  "bugs": {
+    "url": "https://github.com/alisher-amantay/pi-agent-view/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}
