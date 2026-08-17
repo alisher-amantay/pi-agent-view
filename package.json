@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-view",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Pi extension that multiplexes several live InteractiveMode sessions in one process. Switching is a terminal handoff — background sessions keep running.",
   "keywords": [

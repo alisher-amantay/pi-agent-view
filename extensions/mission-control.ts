@@ -1,6 +1,7 @@
 /** Mission control — one screen listing every live session in this pi process. */
 
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { execSync } from "node:child_process";
+import { copyToClipboard, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	type Focusable,
@@ -88,7 +89,9 @@ export class MissionControlComponent implements Component, Focusable {
 	private confirmingStopId: string | null = null;
 	private unsubscribe: () => void;
 	private ticker: ReturnType<typeof setInterval>;
-	private focusPin: ReturnType<typeof setInterval> | null = null;
+	private focusWatch: ReturnType<typeof setInterval> | null = null;
+	private overlay: OverlayHandle | null = null;
+	private closed = false;
 	private _focused = false;
 
 	constructor(options: {
@@ -108,7 +111,7 @@ export class MissionControlComponent implements Component, Focusable {
 		this.activeId = options.activeId;
 
 		this.input.onSubmit = () => this.submit();
-		this.input.onEscape = () => this.done({ type: "dismiss" });
+		this.input.onEscape = () => this.finish({ type: "dismiss" });
 
 		this.unsubscribe = this.host.subscribe(() => {
 			this.rebuild();
@@ -138,21 +141,56 @@ export class MissionControlComponent implements Component, Focusable {
 		this.rebuild();
 	}
 
-	/** Keep reclaiming overlay focus until this view is closed. */
+	/**
+	 * Own the overlay handle for the life of this dialog.
+	 *
+	 * A later setEditorComponent / focus restore can leave this overlay painted
+	 * while the chat editor is active. That ghost dialog swallows Cmd/Option
+	 * chords and makes the input look broken. Reclaim focus briefly after open,
+	 * then dismiss instead of leaving a painted-but-unfocused overlay.
+	 */
 	attachOverlay(overlay: OverlayHandle): void {
-		if (this.focusPin) clearInterval(this.focusPin);
-		const pin = () => {
-			if (!overlay.isFocused()) overlay.focus();
-		};
-		pin();
-		this.focusPin = setInterval(pin, 50);
-		this.focusPin.unref?.();
+		this.overlay = overlay;
+		if (this.focusWatch) clearInterval(this.focusWatch);
+		overlay.focus();
+		const graceUntil = Date.now() + 300;
+		this.focusWatch = setInterval(() => {
+			if (this.closed) return;
+			if (overlay.isFocused()) return;
+			if (Date.now() < graceUntil) {
+				overlay.focus();
+				return;
+			}
+			this.finish({ type: "dismiss" });
+		}, 50);
+		this.focusWatch.unref?.();
+	}
+
+	private finish(result: MissionControlResult): void {
+		if (this.closed) return;
+		this.closed = true;
+		if (this.focusWatch) {
+			clearInterval(this.focusWatch);
+			this.focusWatch = null;
+		}
+		try {
+			this.overlay?.hide();
+		} catch {
+			// overlay may already be gone
+		}
+		this.done(result);
 	}
 
 	dispose(): void {
+		this.closed = true;
 		this.unsubscribe();
 		clearInterval(this.ticker);
-		if (this.focusPin) clearInterval(this.focusPin);
+		if (this.focusWatch) clearInterval(this.focusWatch);
+		try {
+			this.overlay?.hide();
+		} catch {
+			// overlay may already be gone
+		}
 	}
 
 	get focused(): boolean {
@@ -235,7 +273,7 @@ export class MissionControlComponent implements Component, Focusable {
 	private submit(): void {
 		const prompt = this.input.getValue().trim();
 		if (prompt.length > 0) {
-			this.done({ type: "spawn", prompt });
+			this.finish({ type: "spawn", prompt });
 			return;
 		}
 		this.openSelection();
@@ -245,12 +283,12 @@ export class MissionControlComponent implements Component, Focusable {
 	private openSelection(): void {
 		const dormant = this.selectedRow()?.dormant;
 		if (dormant) {
-			this.done({ type: "resume", session: dormant });
+			this.finish({ type: "resume", session: dormant });
 			return;
 		}
 		const session = this.selectedSession();
 		if (!session) {
-			this.done({ type: "dismiss" });
+			this.finish({ type: "dismiss" });
 			return;
 		}
 		if (session.state === "error") {
@@ -258,7 +296,7 @@ export class MissionControlComponent implements Component, Focusable {
 			this.requestRender();
 			return;
 		}
-		this.done({ type: "activate", id: session.id });
+		this.finish({ type: "activate", id: session.id });
 	}
 
 	private stopOrConfirm(): void {
@@ -306,7 +344,7 @@ export class MissionControlComponent implements Component, Focusable {
 		}
 
 		if (matchesKey(data, Key.escape) || this.keybindings.matches(data, "tui.select.cancel")) {
-			this.done({ type: "dismiss" });
+			this.finish({ type: "dismiss" });
 			return;
 		}
 		if (matchesKey(data, Key.up) || this.keybindings.matches(data, "tui.select.up")) {
@@ -335,6 +373,26 @@ export class MissionControlComponent implements Component, Focusable {
 		}
 		if (stopKey) {
 			this.stopOrConfirm();
+			return;
+		}
+		if (matchesKey(data, Key.super("c"))) {
+			const text = this.input.getValue();
+			if (text) void copyToClipboard(text).catch(() => {});
+			return;
+		}
+		if (matchesKey(data, Key.super("v"))) {
+			let pasted = "";
+			try {
+				pasted = execSync("pbpaste", { encoding: "utf8", timeout: 2000 });
+			} catch {
+				pasted = "";
+			}
+			const clean = pasted.replace(/[\x00-\x1f\x7f]/g, "");
+			if (clean) {
+				this.input.handleInput(clean);
+				this.rebuild();
+			}
+			this.requestRender();
 			return;
 		}
 

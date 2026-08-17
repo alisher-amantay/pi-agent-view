@@ -10,8 +10,9 @@
  *   plain `pi` auto-opens it on an empty first session · `pi --agents` forces it
  */
 
+import { execSync } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { CustomEditor, SessionManager } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, CustomEditor, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	type EditorTheme,
 	Key,
@@ -163,11 +164,58 @@ async function enter(
 	await host.activateFrom(ctx, child.id);
 }
 
+function readClipboardText(): string {
+	try {
+		return execSync("pbpaste", { encoding: "utf8", timeout: 2000 });
+	} catch {
+		return "";
+	}
+}
+
+interface EditorLike {
+	getText(): string;
+	insertTextAtCursor?(text: string): void;
+	handleInput?(data: string): void;
+	onSubmit?: (text: string) => void | Promise<void>;
+}
+
+/** Cmd/Option chords plus empty-prompt ← to open agent view. */
+function bindEditorKeys(editor: EditorLike, originalHandle?: (data: string) => void): void {
+	editor.handleInput = (data: string) => {
+		// Only unmodified ←. Option/Command+← must keep moving the cursor.
+		if (matchesKey(data, Key.left) && editor.getText().length === 0) {
+			void editor.onSubmit?.("/agents");
+			return;
+		}
+		if (matchesKey(data, Key.super("c"))) {
+			const text = editor.getText();
+			if (text) void copyToClipboard(text).catch(() => {});
+			return;
+		}
+		if (matchesKey(data, Key.super("v"))) {
+			const text = readClipboardText();
+			if (text) editor.insertTextAtCursor?.(text);
+			return;
+		}
+		originalHandle?.(data);
+	};
+}
+
 /** Editor that opens mission control on ← when the prompt is empty. */
 class AgentViewEditor extends CustomEditor {
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.left) && this.getText().length === 0) {
 			void this.onSubmit?.("/agents");
+			return;
+		}
+		if (matchesKey(data, Key.super("c"))) {
+			const text = this.getText();
+			if (text) void copyToClipboard(text).catch(() => {});
+			return;
+		}
+		if (matchesKey(data, Key.super("v"))) {
+			const text = readClipboardText();
+			if (text) this.insertTextAtCursor(text);
 			return;
 		}
 		super.handleInput(data);
@@ -182,14 +230,7 @@ function installBackArrow(ctx: ExtensionContext): void {
 		if (previous) {
 			// Wrap an editor another extension installed rather than replacing it.
 			const inner = previous(tui, theme, keybindings);
-			const originalHandle = inner.handleInput?.bind(inner);
-			inner.handleInput = (data: string) => {
-				if (matchesKey(data, Key.left) && inner.getText().length === 0) {
-					void inner.onSubmit?.("/agents");
-					return;
-				}
-				originalHandle?.(data);
-			};
+			bindEditorKeys(inner, inner.handleInput?.bind(inner));
 			return inner;
 		}
 		return new AgentViewEditor(tui, theme, keybindings);
@@ -268,7 +309,7 @@ export default function (pi: ExtensionAPI) {
 		// restores leave the overlay painted but the chat editor active.
 		setTimeout(() => {
 			void runMissionControl(ctx);
-		}, 0);
+		}, 50);
 	});
 
 	pi.on("session_info_changed", (event, ctx) => {

@@ -22,6 +22,7 @@ import {
 	InteractiveMode,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { setKittyProtocolActive } from "@earendil-works/pi-tui";
 
 export const HOST_ID = "__host__";
 
@@ -65,10 +66,15 @@ export interface LiveSession {
 /**
  * Kitty/xterm extended keyboard modes are per-TUI. Reset them when handing the
  * terminal between TUIs or the next owner inherits a broken input mode.
+ *
+ * Use the same pop sequence TUI.stop() uses (`CSI < u`) and clear the process-
+ * wide flag. Popping 999 times used to desync Cursor/VS Code: the terminal
+ * stopped reporting Option/Command chords, so word-jump and Cmd+C/V died.
  */
 function resetKeyboardModesForHandoff(): void {
 	try {
-		process.stdout.write("\x1b[<999u\x1b[>4;0m");
+		process.stdout.write("\x1b[<u\x1b[>4;0m");
+		setKittyProtocolActive(false);
 	} catch {
 		// terminal may be gone; nothing to restore
 	}
