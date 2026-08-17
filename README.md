@@ -49,8 +49,7 @@ The live registry lives on `globalThis`. `/reload` re-evaluates the extension wi
 ## Entry points
 
 ```bash
-pi                  # auto-opens on an empty first session
-pi --agents         # force-open
+pi --agents         # open agent view on startup
 ```
 
 Inside any session:
@@ -80,8 +79,6 @@ Typing filters the list.
 - Nothing locks a transcript. Bringing back a session that another pi process has open gives it two writers.
 - The original session can't be stopped from the view; use `/quit`.
 - No path locking between sessions yet — two sessions editing the same files can conflict. Give parallel work non-overlapping scopes.
-
-Set `PI_AGENT_VIEW_SKIP_AUTO=1` to skip the startup launcher for one run.
 
 ## Compatibility
 

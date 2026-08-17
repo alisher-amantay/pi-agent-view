@@ -6,8 +6,7 @@
  * just a terminal handoff, so nothing is stopped, replaced, or lost.
  *
  * Entry points:
- *   /agents · /agent-view · Ctrl+Shift+A · ← on an empty prompt
- *   plain `pi` auto-opens it on an empty first session · `pi --agents` forces it
+ *   /agents · /agent-view · Ctrl+Shift+A · ← on an empty prompt · `pi --agents`
  */
 
 import { execSync } from "node:child_process";
@@ -21,24 +20,8 @@ import {
 	type OverlayHandle,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import { type AgentHost, deriveName, getHost, HOST_ID, type LiveSession } from "./host.ts";
+import { type AgentHost, deriveName, getHost, type LiveSession } from "./host.ts";
 import { type DormantSession, MissionControlComponent, type MissionControlResult } from "./mission-control.ts";
-
-/** Set to skip the startup launcher for one run. */
-const SKIP_AUTO_ENV = "PI_AGENT_VIEW_SKIP_AUTO";
-
-/** Flags that mean the user already chose a session to land in. */
-const SESSION_TARGET_FLAGS = ["-c", "--continue", "-r", "--resume", "--session", "--fork", "--session-id"];
-
-function startedWithSessionTarget(): boolean {
-	return process.argv.some(
-		(arg) => SESSION_TARGET_FLAGS.includes(arg) || SESSION_TARGET_FLAGS.some((flag) => arg.startsWith(`${flag}=`)),
-	);
-}
-
-function sessionHasUserMessage(ctx: ExtensionContext): boolean {
-	return ctx.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "user");
-}
 
 /** Name shown for a session before it has a user-supplied title. */
 function hostName(ctx: ExtensionContext): string {
@@ -179,45 +162,33 @@ interface EditorLike {
 	onSubmit?: (text: string) => void | Promise<void>;
 }
 
-/** Cmd/Option chords plus empty-prompt ← to open agent view. */
-function bindEditorKeys(editor: EditorLike, originalHandle?: (data: string) => void): void {
-	editor.handleInput = (data: string) => {
-		// Only unmodified ←. Option/Command+← must keep moving the cursor.
-		if (matchesKey(data, Key.left) && editor.getText().length === 0) {
-			void editor.onSubmit?.("/agents");
-			return;
-		}
-		if (matchesKey(data, Key.super("c"))) {
-			const text = editor.getText();
-			if (text) void copyToClipboard(text).catch(() => {});
-			return;
-		}
-		if (matchesKey(data, Key.super("v"))) {
-			const text = readClipboardText();
-			if (text) editor.insertTextAtCursor?.(text);
-			return;
-		}
-		originalHandle?.(data);
-	};
+/** True only for bare ←. Option/Command+← must keep moving the cursor. */
+function isBareLeftArrow(data: string): boolean {
+	return matchesKey(data, Key.left) && !matchesKey(data, Key.alt("left")) && !matchesKey(data, Key.ctrl("left")) && !matchesKey(data, Key.super("left"));
 }
 
-/** Editor that opens mission control on ← when the prompt is empty. */
+function handleEditorChords(editor: EditorLike, data: string): boolean {
+	if (isBareLeftArrow(data) && editor.getText().length === 0) {
+		void editor.onSubmit?.("/agents");
+		return true;
+	}
+	if (matchesKey(data, Key.super("c"))) {
+		const text = editor.getText();
+		if (text) void copyToClipboard(text).catch(() => {});
+		return true;
+	}
+	if (matchesKey(data, Key.super("v"))) {
+		const text = readClipboardText();
+		if (text) editor.insertTextAtCursor?.(text);
+		return true;
+	}
+	return false;
+}
+
+/** Empty-prompt ← opens agent view; Option/Command chords stay normal editor keys. */
 class AgentViewEditor extends CustomEditor {
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.left) && this.getText().length === 0) {
-			void this.onSubmit?.("/agents");
-			return;
-		}
-		if (matchesKey(data, Key.super("c"))) {
-			const text = this.getText();
-			if (text) void copyToClipboard(text).catch(() => {});
-			return;
-		}
-		if (matchesKey(data, Key.super("v"))) {
-			const text = readClipboardText();
-			if (text) this.insertTextAtCursor(text);
-			return;
-		}
+		if (handleEditorChords(this, data)) return;
 		super.handleInput(data);
 	}
 }
@@ -228,9 +199,12 @@ function installBackArrow(ctx: ExtensionContext): void {
 	const previous = ctx.ui.getEditorComponent();
 	ctx.ui.setEditorComponent((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => {
 		if (previous) {
-			// Wrap an editor another extension installed rather than replacing it.
 			const inner = previous(tui, theme, keybindings);
-			bindEditorKeys(inner, inner.handleInput?.bind(inner));
+			const originalHandle = inner.handleInput?.bind(inner);
+			inner.handleInput = (data: string) => {
+				if (handleEditorChords(inner, data)) return;
+				originalHandle?.(data);
+			};
 			return inner;
 		}
 		return new AgentViewEditor(tui, theme, keybindings);
@@ -286,30 +260,20 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		// First session in the process is the host/original one.
-		const record = host.ensureHostRecord({
+		host.ensureHostRecord({
 			cwd: ctx.cwd,
 			sessionId,
 			sessionFile: ctx.sessionManager.getSessionFile(),
 			name: hostName(ctx),
 		});
 
-		// Startup launcher. Guarded to the host record so spawning a child
-		// (which also fires session_start) can never reopen the view, and to a real
-		// startup so /reload and /resume never take over the terminal.
-		const forced = pi.getFlag("agents") === true;
-		const auto =
-			record.id === HOST_ID &&
-			event.reason === "startup" &&
-			!process.env[SKIP_AUTO_ENV] &&
-			(forced || (!sessionHasUserMessage(ctx) && !startedWithSessionTarget()));
-		if (!auto) return;
-
-		// Defer until remaining session_start handlers and bindExtensions work
-		// finish. Opening immediately lets later setEditorComponent / focus
-		// restores leave the overlay painted but the chat editor active.
-		setTimeout(() => {
-			void runMissionControl(ctx);
-		}, 50);
+		// Only open on an explicit `pi --agents`. Auto-opening on empty sessions
+		// left a ghost overlay that stole Option/Command chords from the editor.
+		if (pi.getFlag("agents") === true && event.reason === "startup") {
+			setTimeout(() => {
+				void runMissionControl(ctx);
+			}, 50);
+		}
 	});
 
 	pi.on("session_info_changed", (event, ctx) => {
